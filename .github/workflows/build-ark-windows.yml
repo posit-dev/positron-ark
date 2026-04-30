@@ -1,0 +1,124 @@
+name: "Ark Prebuild: Windows"
+
+# Builds Ark for Windows (x64 + arm64), then signs the binaries via the
+# shared posit-gh-actions Authenticode workflow. Called from build-ark.yml.
+
+on:
+  workflow_call:
+    inputs:
+      ark_ref:
+        required: true
+        type: string
+        description: "Ark git ref/SHA to build"
+      version:
+        required: true
+        type: string
+        description: "Public ark version, e.g. 0.1.251"
+      distance:
+        required: true
+        type: string
+        description: "Commits since the public version tag, e.g. 10"
+  workflow_dispatch:
+    inputs:
+      ark_ref:
+        required: false
+        default: "main"
+        type: string
+      version:
+        required: true
+        type: string
+      distance:
+        required: true
+        type: string
+
+jobs:
+  build_windows:
+    name: Build Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 40
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runs_on: windows-latest
+            rust_target_prefix: x86_64
+          - arch: arm64
+            runs_on: windows-11-arm
+            rust_target_prefix: aarch64
+
+    steps:
+      - name: Checkout ark
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ inputs.ark_ref }}
+
+      - name: Compile ark
+        env:
+          RUST_TARGET: ${{ matrix.rust_target_prefix }}-pc-windows-msvc
+          ARK_BUILD_VERSION: ${{ inputs.version }}+${{ inputs.distance }}
+        shell: cmd
+        run: |
+          cargo clean
+          cargo build --release --target ${{ matrix.rust_target_prefix }}-pc-windows-msvc
+
+      - name: Upload unsigned executable for signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ark-windows-${{ matrix.arch }}-unsigned
+          path: target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\release\ark.exe
+
+  sign_windows:
+    name: Sign Windows binaries
+    uses: posit-dev/posit-gh-actions/.github/workflows/sign-windows.yml@main
+    needs: [build_windows]
+    secrets: inherit
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    with:
+      unsigned_artifact_name: ark-windows-${{ matrix.arch }}-unsigned
+      signed_artifact_name: ark-windows-${{ matrix.arch }}-signed
+
+  repackage_signed_windows:
+    name: Repackage signed Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    needs: [sign_windows]
+    timeout-minutes: 10
+
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+
+    steps:
+      - name: Checkout ark
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ inputs.ark_ref }}
+
+      - name: Download signed executable
+        uses: actions/download-artifact@v4
+        with:
+          name: ark-windows-${{ matrix.arch }}-signed
+          path: signed
+
+      - name: Create signed archive
+        shell: pwsh
+        run: |
+          $params = @{
+            Path = "signed\ark.exe", "LICENSE", "crates\ark\NOTICE"
+            DestinationPath = "ark-${{ inputs.version }}-${{ inputs.distance }}-windows-${{ matrix.arch }}.zip"
+          }
+          Compress-Archive @params
+
+      - name: Upload signed archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ark-windows-${{ matrix.arch }}-archive
+          path: ark-${{ inputs.version }}-${{ inputs.distance }}-windows-${{ matrix.arch }}.zip

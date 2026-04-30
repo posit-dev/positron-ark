@@ -1,0 +1,201 @@
+name: "Build Ark Prebuild"
+
+# Produces a Positron-flavored prebuild of Ark and publishes it as a GitHub
+# release in this repo, tagged ark-{version}-{distance} where {version} is
+# from posit-dev/ark's crates/ark/Cargo.toml and {distance} is the number of
+# commits between the most recent ark release tag and the requested ref.
+# install-kernel.ts in positron-r consumes these prebuilds.
+#
+# Triggers:
+# - workflow_call: invoked cross-repo by posit-dev/positron-builds'
+#   build-release.yml prepare_ark job, so each daily Positron build
+#   atomically produces the matching ark prebuild if missing. Primary path.
+# - workflow_dispatch: build any ark SHA manually, for backfill or ad-hoc
+#   testing of an in-flight ark change before the next daily.
+#
+# Ark commits do not drive prebuilds directly; the positron submodule pointer
+# does, and that signal is captured by the daily build's prepare_ark job.
+
+on:
+  workflow_call:
+    inputs:
+      ark_ref:
+        description: "Ark git ref or SHA"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ark_ref:
+        description: "Ark git ref (branch, tag, or commit SHA)"
+        required: false
+        default: "main"
+        type: string
+
+jobs:
+  get_version:
+    name: Determine Ark version + distance
+    runs-on: ubuntu-latest
+    outputs:
+      ARK_SHA: ${{ steps.resolve.outputs.ARK_SHA }}
+      VERSION: ${{ steps.resolve.outputs.VERSION }}
+      DISTANCE: ${{ steps.resolve.outputs.DISTANCE }}
+      RELEASE_TAG: ${{ steps.resolve.outputs.RELEASE_TAG }}
+      BUILD_VERSION: ${{ steps.resolve.outputs.BUILD_VERSION }}
+    steps:
+      - name: Resolve ark ref
+        id: ref
+        run: |
+          echo "ARK_REF=${{ inputs.ark_ref }}" >> $GITHUB_OUTPUT
+
+      - name: Checkout ark
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ steps.ref.outputs.ARK_REF }}
+          fetch-depth: 0
+
+      - name: Compute version, distance, and tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version' crates/ark/Cargo.toml | sed -e 's/[^.0-9]//g')
+          # Distance from the most recent ark release tag. ark tags release
+          # commits with the bare version string (e.g. "0.1.251").
+          LAST_TAG=$(git describe --tags --abbrev=0)
+          DISTANCE=$(git rev-list --count "${LAST_TAG}..HEAD")
+          ARK_SHA=$(git rev-parse HEAD)
+          RELEASE_TAG="ark-${VERSION}-${DISTANCE}"
+          BUILD_VERSION="${VERSION}+${DISTANCE}"
+          echo "VERSION=${VERSION}"           | tee -a $GITHUB_OUTPUT
+          echo "DISTANCE=${DISTANCE}"         | tee -a $GITHUB_OUTPUT
+          echo "ARK_SHA=${ARK_SHA}"           | tee -a $GITHUB_OUTPUT
+          echo "RELEASE_TAG=${RELEASE_TAG}"   | tee -a $GITHUB_OUTPUT
+          echo "BUILD_VERSION=${BUILD_VERSION}" | tee -a $GITHUB_OUTPUT
+
+  check_release:
+    name: Check for existing prebuild
+    runs-on: ubuntu-latest
+    needs: get_version
+    outputs:
+      EXISTS: ${{ steps.check.outputs.exists }}
+    steps:
+      - uses: mukunku/tag-exists-action@v1.6.0
+        id: check
+        with:
+          tag: ${{ needs.get_version.outputs.RELEASE_TAG }}
+      - name: Report
+        run: |
+          echo "Tag ${{ needs.get_version.outputs.RELEASE_TAG }} exists: ${{ steps.check.outputs.exists }}"
+
+  do_build:
+    name: Trigger build
+    if: ${{ needs.check_release.outputs.EXISTS == 'false' }}
+    runs-on: ubuntu-latest
+    needs: [get_version, check_release]
+    steps:
+      - run: echo "Building ${{ needs.get_version.outputs.RELEASE_TAG }} from ${{ needs.get_version.outputs.ARK_SHA }}"
+
+  build_macos:
+    name: Build macOS
+    needs: [do_build, get_version]
+    uses: ./.github/workflows/build-ark-macos.yml
+    secrets: inherit
+    with:
+      ark_ref: ${{ needs.get_version.outputs.ARK_SHA }}
+      version: ${{ needs.get_version.outputs.VERSION }}
+      distance: ${{ needs.get_version.outputs.DISTANCE }}
+
+  build_windows:
+    name: Build Windows
+    needs: [do_build, get_version]
+    uses: ./.github/workflows/build-ark-windows.yml
+    secrets: inherit
+    with:
+      ark_ref: ${{ needs.get_version.outputs.ARK_SHA }}
+      version: ${{ needs.get_version.outputs.VERSION }}
+      distance: ${{ needs.get_version.outputs.DISTANCE }}
+
+  build_linux:
+    name: Build Linux
+    needs: [do_build, get_version]
+    uses: ./.github/workflows/build-ark-linux.yml
+    secrets: inherit
+    with:
+      ark_ref: ${{ needs.get_version.outputs.ARK_SHA }}
+      version: ${{ needs.get_version.outputs.VERSION }}
+      distance: ${{ needs.get_version.outputs.DISTANCE }}
+
+  create_release:
+    name: Create release and upload assets
+    runs-on: ubuntu-latest
+    needs: [get_version, build_macos, build_windows, build_linux]
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ark-*-archive
+          merge-multiple: true
+
+      - name: List downloaded archives
+        run: ls -la ark-*.zip
+
+      - name: Create release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: true
+          tag_name: ${{ needs.get_version.outputs.RELEASE_TAG }}
+          name: "Ark ${{ needs.get_version.outputs.BUILD_VERSION }}"
+          target_commitish: ${{ github.sha }}
+          body: |
+            Positron prebuild of Ark.
+
+            - Source: [posit-dev/ark@${{ needs.get_version.outputs.ARK_SHA }}](https://github.com/posit-dev/ark/commit/${{ needs.get_version.outputs.ARK_SHA }})
+            - Public release version: `${{ needs.get_version.outputs.VERSION }}`
+            - Submodule distance: `${{ needs.get_version.outputs.DISTANCE }}`
+            - Embedded version: `${{ needs.get_version.outputs.BUILD_VERSION }}`
+          files: |
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-darwin-universal.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-darwin-arm64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-darwin-x64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-windows-x64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-windows-arm64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-linux-x64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-linux-arm64.zip
+
+  cleanup_failed_release:
+    name: Clean up failed release
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    needs: [get_version, create_release]
+    steps:
+      - uses: mukunku/tag-exists-action@v1.6.0
+        id: check
+        with:
+          tag: ${{ needs.get_version.outputs.RELEASE_TAG }}
+      - name: Delete failed release
+        if: steps.check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete ${{ needs.get_version.outputs.RELEASE_TAG }} -y --cleanup-tag
+
+  status:
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    needs: [cleanup_failed_release, get_version]
+    steps:
+      - name: Notify slack on failure
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "message": "Ark prebuild ${{ needs.get_version.outputs.RELEASE_TAG }} failed",
+              "status": "Failure",
+              "run_url": "https://github.com/posit-dev/positron-ark/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,0 +1,160 @@
+name: "Ark Prebuild: macOS"
+
+# Builds Ark for macOS, producing three release archives: per-arch zips for
+# arm64 and x64, plus a universal (lipo'd) zip for backwards compatibility
+# with consumers that still pull `darwin-universal`. Mirrors ark's own
+# release-macos.yml after posit-dev/ark#1181.
+# Unsigned/un-notarized: matches ark's current release behavior. Positron's
+# own bundle signing re-signs the binary at app-build time, and install-kernel
+# downloads over HTTP so no quarantine attribute is set on dev machines.
+# Called from build-ark.yml.
+
+on:
+  workflow_call:
+    inputs:
+      ark_ref:
+        required: true
+        type: string
+        description: "Ark git ref/SHA to build"
+      version:
+        required: true
+        type: string
+        description: "Public ark version, e.g. 0.1.251"
+      distance:
+        required: true
+        type: string
+        description: "Commits since the public version tag, e.g. 10"
+  workflow_dispatch:
+    inputs:
+      ark_ref:
+        required: false
+        default: "main"
+        type: string
+      version:
+        required: true
+        type: string
+      distance:
+        required: true
+        type: string
+
+jobs:
+  build_macos:
+    name: Build macOS ${{ matrix.arch }}
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        arch: [arm64, x64]
+        include:
+          - arch: arm64
+            homebrew_folder: /opt/homebrew
+            rust_target_prefix: aarch64
+          - arch: x64
+            homebrew_folder: /usr/local
+            rust_target_prefix: x86_64
+
+    steps:
+      - name: Checkout ark
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ inputs.ark_ref }}
+
+      - name: Configure environment
+        run: grep -v '^#' .github/env/macos.env >> $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+
+      - name: Setup x86 cross-compiling
+        if: matrix.arch == 'x64'
+        run: |
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          rustup target add x86_64-apple-darwin
+
+      # zeromq finds libsodium via pkg-config; we need the x86_64 pkg-config
+      # ahead of arm64's on PATH when cross-building so it picks the right libs.
+      - name: Update PATH for x86_64 pkg-config
+        if: matrix.arch == 'x64'
+        run: echo "${{ matrix.homebrew_folder }}/bin" >> $GITHUB_PATH
+
+      - name: Compile ark
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          RUST_TARGET: ${{ matrix.rust_target_prefix }}-apple-darwin
+          PKG_CONFIG_ALLOW_CROSS: 1
+          ARK_BUILD_VERSION: ${{ inputs.version }}+${{ inputs.distance }}
+        run: |
+          cargo clean
+          cargo build --release --target ${{ matrix.rust_target_prefix }}-apple-darwin
+
+      - name: Create per-arch archive
+        run: |
+          pushd target/${{ matrix.rust_target_prefix }}-apple-darwin/release
+          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-${{ matrix.arch }}.zip"
+          [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
+          [ -e NOTICE ] || cp "$GITHUB_WORKSPACE/crates/ark/NOTICE" NOTICE
+          zip -Xry "$ARCHIVE" ark LICENSE NOTICE
+          popd
+
+      - name: Upload per-arch archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ark-darwin-${{ matrix.arch }}-archive
+          path: ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-${{ matrix.arch }}.zip
+
+  build_universal:
+    name: Build macOS universal binary
+    runs-on: macos-latest
+    timeout-minutes: 20
+    needs: build_macos
+
+    steps:
+      - name: Checkout ark (LICENSE + NOTICE only)
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ inputs.ark_ref }}
+          sparse-checkout: |
+            LICENSE
+            crates/ark/NOTICE
+
+      - name: Download arm64 archive
+        uses: actions/download-artifact@v4
+        with:
+          name: ark-darwin-arm64-archive
+
+      - name: Download x64 archive
+        uses: actions/download-artifact@v4
+        with:
+          name: ark-darwin-x64-archive
+
+      - name: Create universal binary and archive
+        run: |
+          rm -rf x64 && mkdir x64
+          pushd x64
+          unzip ../ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-x64.zip
+          popd
+
+          rm -rf arm64 && mkdir arm64
+          pushd arm64
+          unzip ../ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-arm64.zip
+          popd
+
+          lipo -create x64/ark arm64/ark -output ark
+          chmod +x ark
+          cp crates/ark/NOTICE NOTICE
+          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-universal.zip"
+          zip -Xry "$ARCHIVE" ark LICENSE NOTICE
+
+      - name: Upload universal archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ark-darwin-universal-archive
+          path: ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-universal.zip
