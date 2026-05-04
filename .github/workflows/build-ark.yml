@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ARK_SHA: ${{ steps.resolve.outputs.ARK_SHA }}
+      SHORT_SHA: ${{ steps.resolve.outputs.SHORT_SHA }}
       VERSION: ${{ steps.resolve.outputs.VERSION }}
       DISTANCE: ${{ steps.resolve.outputs.DISTANCE }}
       RELEASE_TAG: ${{ steps.resolve.outputs.RELEASE_TAG }}
@@ -64,11 +65,15 @@ jobs:
           LAST_TAG=$(git describe --tags --abbrev=0)
           DISTANCE=$(git rev-list --count "${LAST_TAG}..HEAD")
           ARK_SHA=$(git rev-parse HEAD)
-          RELEASE_TAG="ark-${VERSION}-${DISTANCE}"
-          BUILD_VERSION="${VERSION}+${DISTANCE}"
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          # Include SHORT_SHA so builds from diverging branches at the same
+          # distance produce distinct tags and asset names.
+          RELEASE_TAG="ark-${VERSION}-${DISTANCE}-${SHORT_SHA}"
+          BUILD_VERSION="${VERSION}+${DISTANCE}.${SHORT_SHA}"
           echo "VERSION=${VERSION}"           | tee -a $GITHUB_OUTPUT
           echo "DISTANCE=${DISTANCE}"         | tee -a $GITHUB_OUTPUT
           echo "ARK_SHA=${ARK_SHA}"           | tee -a $GITHUB_OUTPUT
+          echo "SHORT_SHA=${SHORT_SHA}"       | tee -a $GITHUB_OUTPUT
           echo "RELEASE_TAG=${RELEASE_TAG}"   | tee -a $GITHUB_OUTPUT
           echo "BUILD_VERSION=${BUILD_VERSION}" | tee -a $GITHUB_OUTPUT
 
@@ -104,6 +109,7 @@ jobs:
       ark_ref: ${{ needs.get_version.outputs.ARK_SHA }}
       version: ${{ needs.get_version.outputs.VERSION }}
       distance: ${{ needs.get_version.outputs.DISTANCE }}
+      short_sha: ${{ needs.get_version.outputs.SHORT_SHA }}
 
   build_windows:
     name: Build Windows
@@ -114,6 +120,7 @@ jobs:
       ark_ref: ${{ needs.get_version.outputs.ARK_SHA }}
       version: ${{ needs.get_version.outputs.VERSION }}
       distance: ${{ needs.get_version.outputs.DISTANCE }}
+      short_sha: ${{ needs.get_version.outputs.SHORT_SHA }}
 
   build_linux:
     name: Build Linux
@@ -124,6 +131,7 @@ jobs:
       ark_ref: ${{ needs.get_version.outputs.ARK_SHA }}
       version: ${{ needs.get_version.outputs.VERSION }}
       distance: ${{ needs.get_version.outputs.DISTANCE }}
+      short_sha: ${{ needs.get_version.outputs.SHORT_SHA }}
 
   create_release:
     name: Create release and upload assets
@@ -159,13 +167,13 @@ jobs:
             - Submodule distance: `${{ needs.get_version.outputs.DISTANCE }}`
             - Embedded version: `${{ needs.get_version.outputs.BUILD_VERSION }}`
           files: |
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-darwin-universal.zip
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-darwin-arm64.zip
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-darwin-x64.zip
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-windows-x64.zip
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-windows-arm64.zip
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-linux-x64.zip
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-linux-arm64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-darwin-universal.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-darwin-arm64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-darwin-x64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-windows-x64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-windows-arm64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-linux-x64.zip
+            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-linux-arm64.zip
 
   cleanup_failed_release:
     name: Clean up failed release

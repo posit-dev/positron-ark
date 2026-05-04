@@ -12,13 +12,20 @@ on:
         type: string
         description: "Ark git ref/SHA to build"
       version:
-        required: true
+        required: false
+        default: ""
         type: string
-        description: "Public ark version, e.g. 0.1.251"
+        description: "Public ark version, e.g. 0.1.251 (derived from ark_ref if omitted)"
       distance:
-        required: true
+        required: false
+        default: ""
         type: string
-        description: "Commits since the public version tag, e.g. 10"
+        description: "Commits since the public version tag (derived from ark_ref if omitted)"
+      short_sha:
+        required: false
+        default: ""
+        type: string
+        description: "Short (7-char) SHA of the ark commit (derived from ark_ref if omitted)"
   workflow_dispatch:
     inputs:
       ark_ref:
@@ -26,15 +33,60 @@ on:
         default: "main"
         type: string
       version:
-        required: true
+        required: false
+        default: ""
         type: string
       distance:
-        required: true
+        required: false
+        default: ""
+        type: string
+      short_sha:
+        required: false
+        default: ""
         type: string
 
 jobs:
+  resolve:
+    name: Resolve version inputs
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.out.outputs.version }}
+      distance: ${{ steps.out.outputs.distance }}
+      short_sha: ${{ steps.out.outputs.short_sha }}
+    steps:
+      # Skip checkout when the caller already passed all three values; the
+      # parent build-ark.yml does, so the common path is a pure passthrough.
+      - name: Checkout ark
+        if: ${{ inputs.version == '' || inputs.distance == '' || inputs.short_sha == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ inputs.ark_ref }}
+          fetch-depth: 0
+      - name: Compute outputs
+        id: out
+        run: |
+          set -euo pipefail
+          VERSION='${{ inputs.version }}'
+          DISTANCE='${{ inputs.distance }}'
+          SHORT_SHA='${{ inputs.short_sha }}'
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep '^version' crates/ark/Cargo.toml | sed -e 's/[^.0-9]//g')
+          fi
+          if [ -z "$DISTANCE" ]; then
+            LAST_TAG=$(git describe --tags --abbrev=0)
+            DISTANCE=$(git rev-list --count "${LAST_TAG}..HEAD")
+          fi
+          if [ -z "$SHORT_SHA" ]; then
+            SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          fi
+          echo "version=${VERSION}"     | tee -a $GITHUB_OUTPUT
+          echo "distance=${DISTANCE}"   | tee -a $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" | tee -a $GITHUB_OUTPUT
+
   build_linux:
     name: Build Linux ${{ matrix.arch }}
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -70,7 +122,7 @@ jobs:
 
       - name: Compile ark
         env:
-          ARK_BUILD_VERSION: ${{ inputs.version }}+${{ inputs.distance }}
+          ARK_BUILD_VERSION: ${{ needs.resolve.outputs.version }}+${{ needs.resolve.outputs.distance }}.${{ needs.resolve.outputs.short_sha }}
         run: |
           cargo clean
           cargo zigbuild --release \
@@ -79,7 +131,7 @@ jobs:
       - name: Create archive
         run: |
           pushd target/${ARCH_FLAG}-unknown-linux-gnu/release
-          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ inputs.version }}-${{ inputs.distance }}-linux-${{ matrix.arch }}.zip"
+          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-linux-${{ matrix.arch }}.zip"
           [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
           [ -e NOTICE ] || cp "$GITHUB_WORKSPACE/crates/ark/NOTICE" NOTICE
           zip -Xry $ARCHIVE ark LICENSE NOTICE
@@ -89,4 +141,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ark-linux-${{ matrix.arch }}-archive
-          path: ark-${{ inputs.version }}-${{ inputs.distance }}-linux-${{ matrix.arch }}.zip
+          path: ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-linux-${{ matrix.arch }}.zip

@@ -17,13 +17,20 @@ on:
         type: string
         description: "Ark git ref/SHA to build"
       version:
-        required: true
+        required: false
+        default: ""
         type: string
-        description: "Public ark version, e.g. 0.1.251"
+        description: "Public ark version, e.g. 0.1.251 (derived from ark_ref if omitted)"
       distance:
-        required: true
+        required: false
+        default: ""
         type: string
-        description: "Commits since the public version tag, e.g. 10"
+        description: "Commits since the public version tag (derived from ark_ref if omitted)"
+      short_sha:
+        required: false
+        default: ""
+        type: string
+        description: "Short (7-char) SHA of the ark commit (derived from ark_ref if omitted)"
   workflow_dispatch:
     inputs:
       ark_ref:
@@ -31,15 +38,60 @@ on:
         default: "main"
         type: string
       version:
-        required: true
+        required: false
+        default: ""
         type: string
       distance:
-        required: true
+        required: false
+        default: ""
+        type: string
+      short_sha:
+        required: false
+        default: ""
         type: string
 
 jobs:
+  resolve:
+    name: Resolve version inputs
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.out.outputs.version }}
+      distance: ${{ steps.out.outputs.distance }}
+      short_sha: ${{ steps.out.outputs.short_sha }}
+    steps:
+      # Skip checkout when the caller already passed all three values; the
+      # parent build-ark.yml does, so the common path is a pure passthrough.
+      - name: Checkout ark
+        if: ${{ inputs.version == '' || inputs.distance == '' || inputs.short_sha == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: posit-dev/ark
+          ref: ${{ inputs.ark_ref }}
+          fetch-depth: 0
+      - name: Compute outputs
+        id: out
+        run: |
+          set -euo pipefail
+          VERSION='${{ inputs.version }}'
+          DISTANCE='${{ inputs.distance }}'
+          SHORT_SHA='${{ inputs.short_sha }}'
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep '^version' crates/ark/Cargo.toml | sed -e 's/[^.0-9]//g')
+          fi
+          if [ -z "$DISTANCE" ]; then
+            LAST_TAG=$(git describe --tags --abbrev=0)
+            DISTANCE=$(git rev-list --count "${LAST_TAG}..HEAD")
+          fi
+          if [ -z "$SHORT_SHA" ]; then
+            SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          fi
+          echo "version=${VERSION}"     | tee -a $GITHUB_OUTPUT
+          echo "distance=${DISTANCE}"   | tee -a $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" | tee -a $GITHUB_OUTPUT
+
   build_macos:
     name: Build macOS ${{ matrix.arch }}
+    needs: resolve
     runs-on: macos-latest
     timeout-minutes: 40
 
@@ -89,7 +141,7 @@ jobs:
           npm_config_arch: ${{ matrix.arch }}
           RUST_TARGET: ${{ matrix.rust_target_prefix }}-apple-darwin
           PKG_CONFIG_ALLOW_CROSS: 1
-          ARK_BUILD_VERSION: ${{ inputs.version }}+${{ inputs.distance }}
+          ARK_BUILD_VERSION: ${{ needs.resolve.outputs.version }}+${{ needs.resolve.outputs.distance }}.${{ needs.resolve.outputs.short_sha }}
         run: |
           cargo clean
           cargo build --release --target ${{ matrix.rust_target_prefix }}-apple-darwin
@@ -97,7 +149,7 @@ jobs:
       - name: Create per-arch archive
         run: |
           pushd target/${{ matrix.rust_target_prefix }}-apple-darwin/release
-          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-${{ matrix.arch }}.zip"
+          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-${{ matrix.arch }}.zip"
           [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
           [ -e NOTICE ] || cp "$GITHUB_WORKSPACE/crates/ark/NOTICE" NOTICE
           zip -Xry "$ARCHIVE" ark LICENSE NOTICE
@@ -107,13 +159,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ark-darwin-${{ matrix.arch }}-archive
-          path: ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-${{ matrix.arch }}.zip
+          path: ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-${{ matrix.arch }}.zip
 
   build_universal:
     name: Build macOS universal binary
     runs-on: macos-latest
     timeout-minutes: 20
-    needs: build_macos
+    needs: [resolve, build_macos]
 
     steps:
       - name: Checkout ark (LICENSE + NOTICE only)
@@ -139,22 +191,22 @@ jobs:
         run: |
           rm -rf x64 && mkdir x64
           pushd x64
-          unzip ../ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-x64.zip
+          unzip ../ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-x64.zip
           popd
 
           rm -rf arm64 && mkdir arm64
           pushd arm64
-          unzip ../ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-arm64.zip
+          unzip ../ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-arm64.zip
           popd
 
           lipo -create x64/ark arm64/ark -output ark
           chmod +x ark
           cp crates/ark/NOTICE NOTICE
-          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-universal.zip"
+          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-universal.zip"
           zip -Xry "$ARCHIVE" ark LICENSE NOTICE
 
       - name: Upload universal archive
         uses: actions/upload-artifact@v4
         with:
           name: ark-darwin-universal-archive
-          path: ark-${{ inputs.version }}-${{ inputs.distance }}-darwin-universal.zip
+          path: ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-universal.zip
