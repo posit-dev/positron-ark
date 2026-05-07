@@ -88,6 +88,7 @@ jobs:
         id: check
         with:
           tag: ${{ needs.get_version.outputs.RELEASE_TAG }}
+          repo: posit-dev/positron-ark
       - name: Report
         run: |
           echo "Tag ${{ needs.get_version.outputs.RELEASE_TAG }} exists: ${{ steps.check.outputs.exists }}"
@@ -185,6 +186,7 @@ jobs:
         id: check
         with:
           tag: ${{ needs.get_version.outputs.RELEASE_TAG }}
+          repo: posit-dev/positron-ark
       - name: Delete failed release
         if: steps.check.outputs.exists == 'true'
         env:
