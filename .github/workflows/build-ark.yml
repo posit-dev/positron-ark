@@ -106,17 +106,32 @@ jobs:
         run: |
           echo "Tag ${{ needs.get_version.outputs.RELEASE_TAG }} exists: ${{ steps.check.outputs.exists }}"
 
+  # Always runs (even when the prebuild already exists) so the workflow
+  # concludes as success rather than skipped. That lets callers depend on
+  # this workflow with a plain success() check, without needing
+  # !failure()/!cancelled() guards in every downstream job.
   do_build:
-    name: Trigger build
-    if: ${{ needs.check_release.outputs.EXISTS == 'false' }}
+    name: Plan build
     runs-on: ubuntu-latest
     needs: [get_version, check_release]
+    outputs:
+      NEEDS_BUILD: ${{ steps.plan.outputs.NEEDS_BUILD }}
     steps:
-      - run: echo "Building ${{ needs.get_version.outputs.RELEASE_TAG }} from ${{ needs.get_version.outputs.ARK_SHA }}"
+      - name: Plan
+        id: plan
+        run: |
+          if [[ "${{ needs.check_release.outputs.EXISTS }}" == "true" ]]; then
+            echo "Prebuild ${{ needs.get_version.outputs.RELEASE_TAG }} already exists; nothing to build."
+            echo "NEEDS_BUILD=false" >> $GITHUB_OUTPUT
+          else
+            echo "Building ${{ needs.get_version.outputs.RELEASE_TAG }} from ${{ needs.get_version.outputs.ARK_SHA }}"
+            echo "NEEDS_BUILD=true" >> $GITHUB_OUTPUT
+          fi
 
   build_macos:
     name: Build macOS
     needs: [do_build, get_version]
+    if: needs.do_build.outputs.NEEDS_BUILD == 'true'
     uses: ./.github/workflows/build-ark-macos.yml
     secrets: inherit
     with:
@@ -128,6 +143,7 @@ jobs:
   build_windows:
     name: Build Windows
     needs: [do_build, get_version]
+    if: needs.do_build.outputs.NEEDS_BUILD == 'true'
     uses: ./.github/workflows/build-ark-windows.yml
     secrets: inherit
     with:
@@ -139,6 +155,7 @@ jobs:
   build_linux:
     name: Build Linux
     needs: [do_build, get_version]
+    if: needs.do_build.outputs.NEEDS_BUILD == 'true'
     uses: ./.github/workflows/build-ark-linux.yml
     secrets: inherit
     with:
@@ -150,7 +167,8 @@ jobs:
   create_release:
     name: Create release and upload assets
     runs-on: ubuntu-latest
-    needs: [get_version, build_macos, build_windows, build_linux]
+    needs: [get_version, do_build, build_macos, build_windows, build_linux]
+    if: needs.do_build.outputs.NEEDS_BUILD == 'true'
     steps:
       # Mint a token scoped to positron-ark so that releases land here even
       # when the workflow is invoked via workflow_call from another repo.
