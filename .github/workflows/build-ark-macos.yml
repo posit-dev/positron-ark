@@ -103,10 +103,8 @@ jobs:
         arch: [arm64, x64]
         include:
           - arch: arm64
-            homebrew_folder: /opt/homebrew
             rust_target_prefix: aarch64
           - arch: x64
-            homebrew_folder: /usr/local
             rust_target_prefix: x86_64
 
     steps:
@@ -124,17 +122,14 @@ jobs:
           rustup update --no-self-update stable
           rustup default stable
 
+      # No x86 Homebrew is needed here: ark's `zmq-sys` builds libzmq from
+      # vendored sources (via `zeromq-src`) and does not link libsodium, so
+      # nothing under /usr/local is consulted during the build. The Homebrew
+      # installer also refuses to run under Rosetta since Homebrew 7.0, which
+      # broke this step in September 2026. Mirrors posit-dev/ark#1417.
       - name: Setup x86 cross-compiling
         if: matrix.arch == 'x64'
-        run: |
-          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          rustup target add x86_64-apple-darwin
-
-      # zeromq finds libsodium via pkg-config; we need the x86_64 pkg-config
-      # ahead of arm64's on PATH when cross-building so it picks the right libs.
-      - name: Update PATH for x86_64 pkg-config
-        if: matrix.arch == 'x64'
-        run: echo "${{ matrix.homebrew_folder }}/bin" >> $GITHUB_PATH
+        run: rustup target add x86_64-apple-darwin
 
       - name: Compile ark
         env:
