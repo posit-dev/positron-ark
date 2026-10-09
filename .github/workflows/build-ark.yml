@@ -211,7 +211,6 @@ jobs:
             - Submodule distance: `${{ needs.get_version.outputs.DISTANCE }}`
             - Embedded version: `${{ needs.get_version.outputs.BUILD_VERSION }}`
           files: |
-            ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-darwin-universal.zip
             ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-darwin-arm64.zip
             ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-darwin-x64.zip
             ark-${{ needs.get_version.outputs.VERSION }}-${{ needs.get_version.outputs.DISTANCE }}-${{ needs.get_version.outputs.SHORT_SHA }}-windows-x64.zip
