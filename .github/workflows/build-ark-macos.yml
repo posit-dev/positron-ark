@@ -1,9 +1,6 @@
 name: "Ark Prebuild: macOS"
 
-# Builds Ark for macOS, producing three release archives: per-arch zips for
-# arm64 and x64, plus a universal (lipo'd) zip for backwards compatibility
-# with consumers that still pull `darwin-universal`. Mirrors ark's own
-# release-macos.yml after posit-dev/ark#1181.
+# Builds Ark for macOS, producing per-arch release archives for arm64 and x64.
 # Unsigned/un-notarized: matches ark's current release behavior. Positron's
 # own bundle signing re-signs the binary at app-build time, and install-kernel
 # downloads over HTTP so no quarantine attribute is set on dev machines.
@@ -156,52 +153,3 @@ jobs:
           name: ark-darwin-${{ matrix.arch }}-archive
           path: ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-${{ matrix.arch }}.zip
 
-  build_universal:
-    name: Build macOS universal binary
-    runs-on: macos-latest
-    timeout-minutes: 20
-    needs: [resolve, build_macos]
-
-    steps:
-      - name: Checkout ark (LICENSE + NOTICE only)
-        uses: actions/checkout@v4
-        with:
-          repository: posit-dev/ark
-          ref: ${{ inputs.ark_ref }}
-          sparse-checkout: |
-            LICENSE
-            crates/ark/NOTICE
-
-      - name: Download arm64 archive
-        uses: actions/download-artifact@v4
-        with:
-          name: ark-darwin-arm64-archive
-
-      - name: Download x64 archive
-        uses: actions/download-artifact@v4
-        with:
-          name: ark-darwin-x64-archive
-
-      - name: Create universal binary and archive
-        run: |
-          rm -rf x64 && mkdir x64
-          pushd x64
-          unzip ../ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-x64.zip
-          popd
-
-          rm -rf arm64 && mkdir arm64
-          pushd arm64
-          unzip ../ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-arm64.zip
-          popd
-
-          lipo -create x64/ark arm64/ark -output ark
-          chmod +x ark
-          cp crates/ark/NOTICE NOTICE
-          ARCHIVE="$GITHUB_WORKSPACE/ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-universal.zip"
-          zip -Xry "$ARCHIVE" ark LICENSE NOTICE
-
-      - name: Upload universal archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: ark-darwin-universal-archive
-          path: ark-${{ needs.resolve.outputs.version }}-${{ needs.resolve.outputs.distance }}-${{ needs.resolve.outputs.short_sha }}-darwin-universal.zip
